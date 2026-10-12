@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stock Structure Analyzer</title>
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+:root{--bg:#ffffff;--panel:#ffffff;--line:#e0e3eb;--text:#131722;--mute:#787b86;--up:#26a69a;--dn:#ef5350;--gold:#b8860b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"Trebuchet MS",Arial,sans-serif;min-height:100vh;display:flex;flex-direction:column}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:14px;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--panel)}
+h1{font-size:17px;margin:0 8px 0 0;color:#131722}
+.btn{background:var(--up);color:#fff;border:0;border-radius:6px;padding:9px 16px;font:inherit;font-weight:600;cursor:pointer}
+.btn:hover{filter:brightness(1.1)}
+label.t{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);cursor:pointer}
+input[type=number]{width:56px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:5px}
+main{flex:1;display:flex;gap:16px;padding:16px 20px;min-height:0}
+#wrap{position:relative;flex:1;min-height:560px;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+#chart{position:absolute;inset:0}
+#ov{position:absolute;inset:0;pointer-events:none;z-index:2}
+#legend{position:absolute;top:10px;left:12px;z-index:3;font-size:13px;pointer-events:none;display:flex;gap:10px;flex-wrap:wrap}
+#legend b{font-weight:600}
+#empty{position:absolute;inset:0;z-index:4;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--mute);text-align:center;padding:20px;background:var(--panel)}
+#empty.drag{outline:2px dashed var(--up);outline-offset:-12px}
+aside{width:300px;display:flex;flex-direction:column;gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+.card h2{font-size:13px;margin:0 0 12px;color:var(--mute);text-transform:uppercase;letter-spacing:.06em;font-weight:500}
+.big{font-size:30px;font-weight:700;color:#131722}
+.bar{height:8px;border-radius:4px;background:var(--dn);overflow:hidden;margin:10px 0}
+.bar i{display:block;height:100%;background:var(--up)}
+.row{display:flex;justify-content:space-between;font-size:14px;padding:5px 0}
+.small{font-size:12px;color:var(--mute);line-height:1.5;margin-top:10px}
+#err{color:var(--dn);font-size:13px}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px}
+@media(max-width:900px){main{flex-direction:column}aside{width:100%}#wrap{min-height:440px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Stock Structure Analyzer</h1>
+  <button class="btn" id="pick">Upload CSV</button>
+  <input type="file" id="file" accept=".csv" hidden>
+  <label class="t">Swing length <input type="number" id="swing" value="3" min="1" max="15"></label>
+  <label class="t"><input type="checkbox" id="tBos" checked> BOS</label>
+  <label class="t"><input type="checkbox" id="tChoch" checked> CHoCH</label>
+  <label class="t"><input type="checkbox" id="tFvg" checked> FVG</label>
+  <label class="t"><input type="checkbox" id="tFilled"> Filled FVGs</label>
+  <label class="t"><input type="checkbox" id="tSwings"> Swings</label>
+  <span id="err"></span>
+</header>
+<main>
+  <div id="wrap">
+    <div id="chart"></div>
+    <canvas id="ov"></canvas>
+    <div id="legend"></div>
+    <div id="empty">
+      <div style="font-size:18px;color:var(--text)">Drop a CSV here or click Upload CSV</div>
+      <div style="font-size:13px">Columns: published_date, open, high, low, close, per_change, traded_quantity, traded_amount, status</div>
+    </div>
+  </div>
+  <aside>
+    <div class="card"><h2>Structure</h2>
+      <div class="row"><span>Current trend</span><b id="sTrend">-</b></div>
+      <div class="row"><span><i class="sw" style="background:#b8860b"></i>BOS</span><b id="sBos">-</b></div>
+      <div class="row"><span><i class="sw" style="background:#f57c00"></i>CHoCH</span><b id="sChoch">-</b></div>
+      <div class="row"><span><i class="sw" style="background:#26a69a"></i>Open bullish FVG</span><b id="sBull">-</b></div>
+      <div class="row"><span><i class="sw" style="background:#ef5350"></i>Open bearish FVG</span><b id="sBear">-</b></div>
+    </div>
+    <div class="card"><h2>Next candle (experimental)</h2>
+      <div id="pred"><span style="color:var(--mute)">Upload a file to see the model output.</span></div>
+    </div>
+  </aside>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const wrap = $('#wrap'), cv = $('#ov'), ctx = cv.getContext('2d');
+const chart = LightweightCharts.createChart($('#chart'), {
+  autoSize: true,
+  layout: { background: { color: '#ffffff' }, textColor: '#131722', fontFamily: 'Trebuchet MS, Arial, sans-serif' },
+  grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
+  crosshair: { mode: 0 },
+  rightPriceScale: { borderColor: '#e0e3eb', scaleMargins: { top: 0.08, bottom: 0.22 } },
+  timeScale: { borderColor: '#e0e3eb', rightOffset: 8 },
+});
+const candles = chart.addCandlestickSeries({
+  upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
+  wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+});
+const volume = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol' });
+chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+
+let data = null, lastFile = null, byTime = {}, lastLine = null;
+const show = () => ({ bos: $('#tBos').checked, choch: $('#tChoch').checked, fvg: $('#tFvg').checked,
+                      filled: $('#tFilled').checked, swings: $('#tSwings').checked });
+const fmt = (v, d = 2) => v == null ? '-' : Number(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+
+/* ---------- upload ---------- */
+$('#pick').onclick = () => $('#file').click();
+$('#file').onchange = e => e.target.files[0] && upload(e.target.files[0]);
+$('#swing').onchange = () => lastFile && upload(lastFile);
+const empty = $('#empty');
+['dragenter', 'dragover'].forEach(ev => wrap.addEventListener(ev, e => { e.preventDefault(); empty.classList.add('drag'); }));
+['dragleave', 'drop'].forEach(ev => wrap.addEventListener(ev, e => { e.preventDefault(); empty.classList.remove('drag'); }));
+wrap.addEventListener('drop', e => e.dataTransfer.files[0] && upload(e.dataTransfer.files[0]));
+
+async function upload(file) {
+  $('#err').textContent = '';
+  lastFile = file;
+  const fd = new FormData(); fd.append('file', file);
+  try {
+    const res = await fetch('/api/analyze?swing=' + encodeURIComponent($('#swing').value), { method: 'POST', body: fd });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.detail || 'Upload failed');
+    load(j);
+  } catch (err) { $('#err').textContent = err.message; }
+}
+
+function load(j) {
+  data = j;
+  empty.style.display = 'none';
+  byTime = Object.fromEntries(j.rows.map(r => [r.time, r]));
+  candles.setData(j.rows.map(r => ({ time: r.time, open: r.open, high: r.high, low: r.low, close: r.close })));
+  volume.setData(j.rows.filter(r => r.volume != null).map(r => ({
+    time: r.time, value: r.volume, color: r.close >= r.open ? 'rgba(38,166,154,.4)' : 'rgba(239,83,80,.4)' })));
+  const last = j.rows[j.rows.length - 1];
+  if (lastLine) candles.removePriceLine(lastLine);
+  lastLine = candles.createPriceLine({ price: last.close, color: last.close >= last.open ? '#26a69a' : '#ef5350',
+                                       lineWidth: 1, lineStyle: 3, axisLabelVisible: true, title: '' });
+  const n = j.rows.length;
+  chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 160), to: n + 8 });
+  setLegend(last);
+  panel(j);
+}
+
+function setLegend(r) {
+  if (!r) return;
+  const c = r.close >= r.open ? '#26a69a' : '#ef5350';
+  $('#legend').innerHTML =
+    `<span>O <b style="color:${c}">${fmt(r.open)}</b></span><span>H <b style="color:${c}">${fmt(r.high)}</b></span>` +
+    `<span>L <b style="color:${c}">${fmt(r.low)}</b></span><span>C <b style="color:${c}">${fmt(r.close)}</b></span>` +
+    `<span style="color:${c}">${r.per_change == null ? '' : (r.per_change >= 0 ? '+' : '') + fmt(r.per_change) + '%'}</span>` +
+    (r.volume != null ? `<span style="color:#787b86">Vol ${fmt(r.volume, 0)}</span>` : '') +
+    (r.status ? `<span style="color:#787b86">${r.status}</span>` : '');
+}
+chart.subscribeCrosshairMove(p => {
+  if (!data) return;
+  setLegend(p.time ? byTime[p.time] : data.rows[data.rows.length - 1]);
+});
+
+function panel(j) {
+  $('#sTrend').textContent = j.structure;
+  $('#sTrend').style.color = j.structure === 'bullish' ? '#26a69a' : j.structure === 'bearish' ? '#ef5350' : '#131722';
+  $('#sBos').textContent = j.events.filter(e => e.type === 'BOS').length;
+  $('#sChoch').textContent = j.events.filter(e => e.type === 'CHoCH').length;
+  $('#sBull').textContent = j.fvgs.filter(f => f.direction === 'bull' && !f.filled).length;
+  $('#sBear').textContent = j.fvgs.filter(f => f.direction === 'bear' && !f.filled).length;
+  const p = j.prediction;
+  if (!p.available) { $('#pred').innerHTML = `<span style="color:var(--mute)">${p.reason}</span>`; return; }
+  const up = p.prob_up >= 0.5, pct = (up ? p.prob_up : 1 - p.prob_up) * 100;
+  const edge = p.holdout_accuracy > p.baseline_accuracy + 0.02;
+  $('#pred').innerHTML =
+    `<div class="big" style="color:${up ? '#26a69a' : '#ef5350'}">${up ? 'Up' : 'Down'} ${pct.toFixed(0)}%</div>` +
+    `<div class="bar"><i style="width:${(p.prob_up * 100).toFixed(0)}%"></i></div>` +
+    `<div class="row"><span>Held-out accuracy</span><b>${(p.holdout_accuracy * 100).toFixed(1)}%</b></div>` +
+    `<div class="row"><span>Naive baseline</span><b>${(p.baseline_accuracy * 100).toFixed(1)}%</b></div>` +
+    `<div class="small">${edge ? 'Beats the baseline on unseen data here, but small samples are noisy.' : 'No reliable edge over the baseline on this data. Treat as noise.'} ` +
+    `Trained on ${p.n_train} rows, tested on ${p.n_test}. Not financial advice.</div>`;
+}
+
+/* ---------- overlay: FVG boxes, BOS / CHoCH lines, swings ---------- */
+function draw() {
+  const w = wrap.clientWidth, h = wrap.clientHeight, dpr = window.devicePixelRatio || 1;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (!data) return;
+  const ts = chart.timeScale(), s = show();
+  const X = t => ts.timeToCoordinate(t), Y = p => candles.priceToCoordinate(p);
+  const plotW = w - chart.priceScale('right').width(), plotH = h - ts.height();
+  const lastT = data.rows[data.rows.length - 1].time;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, 0, plotW, plotH); ctx.clip();
+  ctx.font = '11px Trebuchet MS, Arial, sans-serif';
+
+  if (s.fvg) for (const f of data.fvgs) {
+    if (f.filled && !s.filled) continue;
+    const x1 = X(f.start_time), x2 = f.filled ? X(f.end_time) : (X(lastT) ?? 0) + 40;
+    const yt = Y(f.top), yb = Y(f.bottom);
+    if (x1 == null || x2 == null || yt == null || yb == null) continue;
+    const bull = f.direction === 'bull';
+    ctx.globalAlpha = f.filled ? 0.5 : 1;
+    ctx.fillStyle = bull ? 'rgba(38,166,154,.22)' : 'rgba(239,83,80,.22)';
+    ctx.strokeStyle = bull ? 'rgba(38,166,154,.7)' : 'rgba(239,83,80,.7)';
+    ctx.fillRect(x1, yt, x2 - x1, yb - yt);
+    ctx.strokeRect(x1 + .5, yt + .5, x2 - x1, yb - yt);
+    ctx.fillStyle = '#787b86';
+    if (x2 - x1 > 30) ctx.fillText('FVG', x2 - 26, yt + 11);
+    ctx.globalAlpha = 1;
+  }
+
+  for (const e of data.events) {
+    if (e.type === 'BOS' && !s.bos) continue;
+    if (e.type === 'CHoCH' && !s.choch) continue;
+    const x1 = X(e.from_time), x2 = X(e.to_time), y = Y(e.price);
+    if (x1 == null || x2 == null || y == null) continue;
+    const choch = e.type === 'CHoCH', bull = e.direction === 'bull';
+    const col = choch ? '#f57c00' : '#b8860b';
+    ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = choch ? 2 : 1;
+    ctx.setLineDash(choch ? [] : [5, 3]);
+    ctx.beginPath(); ctx.moveTo(x1, y); ctx.lineTo(x2, y); ctx.stroke();
+    ctx.setLineDash([]); ctx.lineWidth = 1;
+    ctx.textAlign = 'center';
+    ctx.fillText(e.type + (bull ? ' ▲' : ' ▼'), (x1 + x2) / 2, bull ? y - 6 : y + 14);
+  }
+
+  if (s.swings) for (const sw of data.swings) {
+    const x = X(sw.time), y = Y(sw.price);
+    if (x == null || y == null) continue;
+    ctx.fillStyle = sw.kind === 'high' ? '#ef5350' : '#26a69a';
+    ctx.textAlign = 'center';
+    ctx.fillText(sw.kind === 'high' ? '▼' : '▲', x, sw.kind === 'high' ? y - 6 : y + 14);
+  }
+  ctx.restore();
+}
+(function loop() { draw(); requestAnimationFrame(loop); })();
+</script>
+</body>
+</html>
